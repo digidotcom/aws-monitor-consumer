@@ -17,7 +17,7 @@ If you do not have an existing AWS account you will need to create one
 
 #### 2) Setup the example application
 
-Use AWS CloudFormation to build the application by clicking [this link](https://console.aws.amazon.com/cloudformation/home#/stacks/create/review?templateURL=https://raw.githubusercontent.com/digidotcom/aws-monitor-consumer/aws_demo.json&stackName=PushMonitorStack)
+Use AWS CloudFormation to build the application using the provided template
 
 Input a name for this stack, this must be unique in your account
 
