@@ -1,0 +1,199 @@
+{
+    "Description" : "Creates an API gateway which uses a lambda function to forward messages from a push monitor to an IoT analytics channel",
+    "Parameters": {
+        "ResourceNamePrefix": {
+            "Type": "String",
+            "Default": "push_monitor_messages_",
+            "Description": "A string that will be used as a prefix for the names of created resources."
+        },
+        "RetentionPeriod": {
+            "Type": "Number",
+            "Default": 90,
+            "Description": "The number of days to store recieved messages"
+        }
+    },
+    "Resources": {
+        "pushMonitorApi": {
+            "Type": "AWS::ApiGateway::RestApi",
+            "Properties": {
+                "Name": { "Fn::Join" : ["", [{ "Ref": "ResourceNamePrefix" }, "api_gateway"]] },
+                "Description": "A REST API for receiving messages from a push monitor"
+            }
+        },
+        "pushMonitorMethod": {
+            "Type": "AWS::ApiGateway::Method",
+            "Properties": {
+                "ApiKeyRequired": true,
+                "AuthorizationType": "NONE",
+                "HttpMethod": "POST",
+                "Integration": {
+                    "Type": "AWS",
+                    "IntegrationHttpMethod": "POST",
+                    "Uri": { "Fn::Join" : ["", ["arn:aws:apigateway:", { "Ref": "AWS::Region" }, ":lambda:path/2015-03-31/functions/", { "Fn::GetAtt": ["forwardPushMonitorMessagesToChannel", "Arn"] }, "/invocations"]] },
+                    "IntegrationResponses": [
+                        {
+                            "StatusCode": 200
+                        }
+                    ]
+                },
+                "MethodResponses": [
+                    {
+                        "StatusCode": 200
+                    }
+                ],
+                "ResourceId": { "Fn::GetAtt": ["pushMonitorApi", "RootResourceId"] },
+                "RestApiId": { "Ref": "pushMonitorApi" }
+            }
+        },
+        "pushMonitorDeploy": {
+            "Type": "AWS::ApiGateway::Deployment",
+            "DependsOn": ["pushMonitorMethod"],
+            "Properties": {
+                "StageName": "prod",
+                "RestApiId": { "Ref": "pushMonitorApi" }
+            }
+        },
+        "pushMonitorApiKey": {
+            "Type": "AWS::ApiGateway::ApiKey",
+            "DependsOn": ["pushMonitorDeploy"],
+            "Properties": {
+                "Name": { "Fn::Join" : ["", [{ "Ref": "ResourceNamePrefix" }, "api_key"]] },
+                "Enabled": true,
+                "StageKeys": [
+                    {
+                        "RestApiId": { "Ref": "pushMonitorApi" },
+                        "StageName": "prod"
+                    }
+                ]
+            }
+        },
+        "pushMonitorApiUsagePlan": {
+            "Type": "AWS::ApiGateway::UsagePlan",
+            "DependsOn": ["pushMonitorDeploy"],
+            "Properties": {
+                "UsagePlanName": { "Fn::Join" : ["", [{ "Ref": "ResourceNamePrefix" }, "usage_plan"]] },
+                "ApiStages": [
+                    {
+                        "ApiId": { "Ref": "pushMonitorApi" },
+                        "Stage": "prod"
+                    }
+                ]
+            }
+        },
+        "pushMonitorApiUsagePlanKey": {
+            "Type": "AWS::ApiGateway::UsagePlanKey",
+            "Properties": {
+                "KeyId": { "Ref": "pushMonitorApiKey" },
+                "KeyType": "API_KEY",
+                "UsagePlanId": { "Ref": "pushMonitorApiUsagePlan" }
+            }
+        },
+        "forwardPushMonitorMessagesToChannel": {
+            "Type" : "AWS::Lambda::Function",
+            "DependsOn": ["pushMonitorMessagesChannel"],
+            "Properties" : {
+                "Description": "A lambda function that process push monitor messages and forwards them to a AWS Iot Analytics channel",
+                "FunctionName": { "Fn::Join" : ["", [{ "Ref": "ResourceNamePrefix" }, "lambda"]] },
+                "Code": { "ZipFile": { "Fn::Join" : ["", ["let AWS = require('aws-sdk');\n\nexports.handler = async (event) => {\n\tlet messages = event.Document.Msg;\n\tif (!Array.isArray(messages)) {\n\t\tmessages = [messages];\n\t}\n\n\tlet iotAnalytics = new AWS.IoTAnalytics(); \n\tlet i = 0;\n\tlet msgStrings = messages.map(message => {\n\t\ti++;\n\t\treturn { messageId: i.toString(), payload: JSON.stringify(message) };\n\t});\n\n\treturn await iotAnalytics.batchPutMessage({ channelName: '", { "Ref": "ResourceNamePrefix" }, "channel", "', messages: msgStrings }).promise();\n};"]] } },
+                "Handler": "index.handler",
+                "Runtime": "nodejs8.10",
+                "Role": { "Fn::GetAtt": ["forwardPushMonitorMessagesToChannelRole", "Arn"] }
+            }
+        },
+        "forwardPushMonitorMessagesToChannelRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": { "Fn::Join": ["", [{ "Ref": "ResourceNamePrefix" }, "role"]] },
+                "AssumeRolePolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": "lambda.amazonaws.com"
+                            },
+                            "Action": "sts:AssumeRole"
+                        }
+                    ] 
+                },
+                "Policies": [
+                    {
+                        "PolicyName": "forwardPushMonitorMessagesToChannelPolicy",
+                        "PolicyDocument": {
+                            "Version": "2012-10-17",
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": ["iotanalytics:BatchPutMessage"],
+                                    "Resource": [{ "Fn::Join" : ["", ["arn:", { "Ref": "AWS::Partition" }, ":iotanalytics:", { "Ref": "AWS::Region" }, ":", { "Ref": "AWS::AccountId" }, ":channel/", { "Ref": "ResourceNamePrefix" }, "channel"]] }]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+        "forwardPushMonitorMessagesToChannelPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "FunctionName": { "Fn::GetAtt": ["forwardPushMonitorMessagesToChannel", "Arn"] },
+                "Action": "lambda:InvokeFunction",
+		        "Principal": "apigateway.amazonaws.com",
+		        "SourceArn": {  "Fn::Join" : ["", ["arn:", { "Ref": "AWS::Partition" }, ":execute-api:", { "Ref": "AWS::Region" }, ":", { "Ref": "AWS::AccountId" }, ":", { "Ref": "pushMonitorApi" }, "/*/POST/"]] }
+            }
+        },
+        "pushMonitorMessagesChannel": {
+            "Type": "AWS::IoTAnalytics::Channel",
+            "Properties": {
+                "ChannelName": { "Fn::Join" : ["", [{ "Ref": "ResourceNamePrefix" }, "channel"]] },
+                "RetentionPeriod": {
+                    "NumberOfDays": { "Ref": "RetentionPeriod" }
+                }
+            }
+        },
+        "pushMonitorMessagesStore": {
+            "Type": "AWS::IoTAnalytics::Datastore",
+            "Properties": {
+                "DatastoreName": { "Fn::Join" : ["", [{ "Ref": "ResourceNamePrefix" }, "datastore"]] },
+                "RetentionPeriod": {
+                    "NumberOfDays": { "Ref": "RetentionPeriod" }
+                }
+            }
+        },
+        "pushMonitorMessagesPipeline": {
+            "Type": "AWS::IoTAnalytics::Pipeline",
+            "DependsOn": ["pushMonitorMessagesChannel", "pushMonitorMessagesStore"],
+            "Properties": {
+                "PipelineName": { "Fn::Join" : ["", [{ "Ref": "ResourceNamePrefix" }, "pipeline"]] },
+                "PipelineActivities": [
+                    {
+                        "Channel": {
+                            "Name": "ChannelActivity",
+                            "ChannelName": { "Fn::Join" : ["", [{ "Ref": "ResourceNamePrefix" }, "channel"]] },
+                            "Next": "DatastoreActivity"
+                        },
+                        "Datastore": {
+                            "Name": "DatastoreActivity",
+                            "DatastoreName": { "Fn::Join" : ["", [{ "Ref": "ResourceNamePrefix" }, "datastore"]] }
+                        }
+                    }
+                ]
+            }
+        },
+        "pushMonitorMessagesDataset": {
+            "Type": "AWS::IoTAnalytics::Dataset",
+            "DependsOn": ["pushMonitorMessagesStore"],
+            "Properties": {
+                "DatasetName": { "Fn::Join" : ["", [{ "Ref": "ResourceNamePrefix" }, "example_dataset"]] },
+                "Actions": [
+                    {
+                        "ActionName": "SqlAction",
+                        "QueryAction": {
+                            "SqlQuery": { "Fn::Join" : ["", ["SELECT * from ", { "Ref": "ResourceNamePrefix" }, "datastore"]] }
+                        }
+                    }
+                ]
+            }
+        }
+    }
+}
